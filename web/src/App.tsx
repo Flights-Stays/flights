@@ -122,24 +122,91 @@ export default function App() {
       .catch(() => {}) // KV may not have prefs yet
   }, [user])
 
+  // Amadeus OAuth token (cached in memory, refreshed every 25 min)
+  const amadeusTokenRef = useRef<{ token: string; expires: number } | null>(null)
+
+  const getAmadeusToken = useCallback(async (): Promise<string> => {
+    const cached = amadeusTokenRef.current
+    if (cached && Date.now() < cached.expires) return cached.token
+
+    // Call token endpoint via proxy (Basic auth injected by platform)
+    const res = await app.proxy.fetch('test.api.amadeus.com/v1/security/oauth2/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: 'grant_type=client_credentials',
+    })
+    if (!res.ok) throw new Error(`Amadeus auth failed: ${res.status}`)
+    const data = await res.json() as { access_token: string; expires_in: number }
+    amadeusTokenRef.current = { token: data.access_token, expires: Date.now() + (data.expires_in - 300) * 1000 }
+    return data.access_token
+  }, [])
+
   const searchFlights = useCallback(async () => {
     if (!origin || !destination || !departDate) return
     setSearchingFlights(true)
-    // Save preferences
     app.kv.set('prefs', { lastOrigin: origin, lastDestination: destination }).catch(() => {})
     try {
-      const { text } = await app.ai.generate(
-        `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate}${returnDate ? ` returning ${returnDate}` : ''} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
+      const token = await getAmadeusToken()
+      const params = new URLSearchParams({
+        originLocationCode: origin.toUpperCase(),
+        destinationLocationCode: destination.toUpperCase(),
+        departureDate: departDate,
+        adults: String(travelers),
+        max: '5',
+        currencyCode: 'USD',
+      })
+      if (returnDate) params.set('returnDate', returnDate)
+
+      // Call Amadeus flight search via proxy (bearer token passed as custom header)
+      const res = await app.proxy.fetch(
+        `test.api.amadeus.com/v2/shopping/flight-offers?${params}`,
+        { headers: { 'X-Amadeus-Bearer': token } }
       )
-      const parsed = JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-      setFlightResults(parsed)
+
+      if (!res.ok) {
+        // Fallback to AI-generated results if Amadeus fails
+        const { text } = await app.ai.generate(
+          `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate}${returnDate ? ` returning ${returnDate}` : ''} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
+        )
+        setFlightResults(JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()))
+        return
+      }
+
+      const json = await res.json() as { data: Array<{
+        id: string
+        itineraries: Array<{ duration: string; segments: Array<{ departure: { iataCode: string; at: string }; arrival: { iataCode: string; at: string }; carrierCode: string; number: string }> }>
+        price: { total: string; currency: string }
+      }> }
+
+      setFlightResults(json.data.map((offer, i) => {
+        const seg = offer.itineraries[0]?.segments || []
+        const first = seg[0]
+        const last = seg[seg.length - 1]
+        return {
+          id: offer.id || `f${i}`,
+          airline: first?.carrierCode || 'Unknown',
+          departure: first?.departure.at.slice(11, 16) || '',
+          arrival: last?.arrival.at.slice(11, 16) || '',
+          origin: first?.departure.iataCode || origin,
+          destination: last?.arrival.iataCode || destination,
+          price: Math.round(Number(offer.price.total)),
+          duration: offer.itineraries[0]?.duration.replace('PT', '').replace('H', 'h ').replace('M', 'm') || '',
+          stops: Math.max(0, seg.length - 1),
+        }
+      }))
     } catch (e) {
       console.error('Flight search failed:', e)
-      setFlightResults([])
+      // Fallback to AI
+      try {
+        const { text } = await app.ai.generate(
+          `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
+        )
+        setFlightResults(JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()))
+      } catch { setFlightResults([]) }
     } finally {
       setSearchingFlights(false)
     }
-  }, [origin, destination, departDate, returnDate, travelers])
+  }, [origin, destination, departDate, returnDate, travelers, getAmadeusToken])
 
   const searchHotels = useCallback(async () => {
     if (!hotelCity || !checkin) return
