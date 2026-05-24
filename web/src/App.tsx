@@ -122,31 +122,12 @@ export default function App() {
       .catch(() => {}) // KV may not have prefs yet
   }, [user])
 
-  // Amadeus OAuth token (cached in memory, refreshed every 25 min)
-  const amadeusTokenRef = useRef<{ token: string; expires: number } | null>(null)
-
-  const getAmadeusToken = useCallback(async (): Promise<string> => {
-    const cached = amadeusTokenRef.current
-    if (cached && Date.now() < cached.expires) return cached.token
-
-    // Call token endpoint via proxy (Basic auth injected by platform)
-    const res = await app.proxy.fetch('test.api.amadeus.com/v1/security/oauth2/token', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: 'grant_type=client_credentials',
-    })
-    if (!res.ok) throw new Error(`Amadeus auth failed: ${res.status}`)
-    const data = await res.json() as { access_token: string; expires_in: number }
-    amadeusTokenRef.current = { token: data.access_token, expires: Date.now() + (data.expires_in - 300) * 1000 }
-    return data.access_token
-  }, [])
-
   const searchFlights = useCallback(async () => {
     if (!origin || !destination || !departDate) return
     setSearchingFlights(true)
     app.kv.set('prefs', { lastOrigin: origin, lastDestination: destination }).catch(() => {})
     try {
-      const token = await getAmadeusToken()
+      // Amadeus flight search via proxy (oauth2_cc handles token automatically)
       const params = new URLSearchParams({
         originLocationCode: origin.toUpperCase(),
         destinationLocationCode: destination.toUpperCase(),
@@ -157,20 +138,11 @@ export default function App() {
       })
       if (returnDate) params.set('returnDate', returnDate)
 
-      // Call Amadeus flight search via proxy (bearer token passed as custom header)
       const res = await app.proxy.fetch(
-        `test.api.amadeus.com/v2/shopping/flight-offers?${params}`,
-        { headers: { 'X-Amadeus-Bearer': token } }
+        `test.api.amadeus.com/v2/shopping/flight-offers?${params}`
       )
 
-      if (!res.ok) {
-        // Fallback to AI-generated results if Amadeus fails
-        const { text } = await app.ai.generate(
-          `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate}${returnDate ? ` returning ${returnDate}` : ''} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
-        )
-        setFlightResults(JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()))
-        return
-      }
+      if (!res.ok) throw new Error(`Amadeus: ${res.status}`)
 
       const json = await res.json() as { data: Array<{
         id: string
@@ -195,18 +167,17 @@ export default function App() {
         }
       }))
     } catch (e) {
-      console.error('Flight search failed:', e)
-      // Fallback to AI
+      console.error('Flight search failed, falling back to AI:', e)
       try {
         const { text } = await app.ai.generate(
-          `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
+          `Generate 5 realistic flight search results as JSON array for a flight from ${origin} to ${destination} on ${departDate}${returnDate ? ` returning ${returnDate}` : ''} for ${travelers} traveler(s). Each result: {"id":"f1","airline":"...","departure":"HH:MM","arrival":"HH:MM","origin":"${origin}","destination":"${destination}","price":number,"duration":"Xh Ym","stops":0|1|2}. Return ONLY the JSON array, no explanation.`
         )
         setFlightResults(JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()))
       } catch { setFlightResults([]) }
     } finally {
       setSearchingFlights(false)
     }
-  }, [origin, destination, departDate, returnDate, travelers, getAmadeusToken])
+  }, [origin, destination, departDate, returnDate, travelers])
 
   const searchHotels = useCallback(async () => {
     if (!hotelCity || !checkin) return
