@@ -201,11 +201,17 @@ export default function App() {
             slices,
             passengers: passengerList,
             cabin_class: cabinClass,
+            max_connections: 1,
+            return_offers: false,
           }
         })
       })
 
-      if (!res.ok) throw new Error(`Duffel: ${res.status}`)
+      if (!res.ok) {
+        const text = await res.text().catch(() => '')
+        if (text.includes('too large')) throw new Error('proxy_limit')
+        throw new Error(`Duffel: ${res.status}`)
+      }
 
       const json = await res.json() as {
         data: {
