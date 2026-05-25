@@ -21,6 +21,7 @@ type FlightOffer = {
   duration: string
   stops: number
   segments: FlightSegment[]
+  passengerIds: string[]
 }
 
 type FlightSegment = {
@@ -37,6 +38,7 @@ type PassengerDetails = {
   firstName: string
   lastName: string
   email: string
+  phone: string
   dateOfBirth: string
   passportNumber: string
   passportExpiry: string
@@ -162,6 +164,7 @@ export default function App() {
           firstName: '',
           lastName: '',
           email: '',
+          phone: '',
           dateOfBirth: '',
           passportNumber: '',
           passportExpiry: '',
@@ -215,6 +218,7 @@ export default function App() {
             id: string
             total_amount: string
             total_currency: string
+            passengers: Array<{ id: string }>
             owner: { name: string; iata_code: string }
             slices: Array<{
               duration: string
@@ -258,6 +262,7 @@ export default function App() {
             arrivalAt: s.arriving_at,
             duration: formatDuration(s.duration),
           })),
+          passengerIds: (offer.passengers || []).map(p => p.id),
         }
       }))
       setTab('results')
@@ -268,8 +273,8 @@ export default function App() {
         const { text } = await app.ai.generate(
           `Generate 6 realistic flight offers as JSON array for ${origin.toUpperCase()} to ${destination.toUpperCase()} on ${departDate}${returnDate ? ` (return ${returnDate})` : ''}, ${passengers} adult(s), ${cabinClass} class. Each: {"id":"offer_xxx","airline":"XX","airlineName":"Airline Name","departure":"HH:MM","arrival":"HH:MM","origin":"${origin.toUpperCase()}","destination":"${destination.toUpperCase()}","price":number,"currency":"USD","duration":"Xh Ym","stops":0|1|2,"segments":[{"carrier":"XX","flightNumber":"1234","origin":"XXX","destination":"YYY","departureAt":"${departDate}T10:00:00","arrivalAt":"${departDate}T14:00:00","duration":"4h 0m"}]}. Vary prices ($200-$1500 for economy, $800-$4000 for business). Return ONLY the JSON array.`
         )
-        const parsed = JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim())
-        setOffers(parsed)
+        const parsed = JSON.parse(text.replace(/```json?\n?/g, '').replace(/```/g, '').trim()) as FlightOffer[]
+        setOffers(parsed.map(o => ({ ...o, passengerIds: o.passengerIds || [] })))
         setTab('results')
       } catch {
         setOffers([])
@@ -281,7 +286,7 @@ export default function App() {
 
   // --- Book a flight ---
   const confirmBooking = useCallback(async () => {
-    if (!selectedOffer || passengerForms.some(p => !p.firstName || !p.lastName || !p.email)) return
+    if (!selectedOffer || passengerForms.some(p => !p.firstName || !p.lastName || !p.email || !p.phone)) return
     setBookingInProgress(true)
 
     try {
@@ -294,12 +299,15 @@ export default function App() {
             type: 'instant',
             selected_offers: [selectedOffer.id],
             passengers: passengerForms.map((p, i) => ({
-              id: `passenger_${i}`,
+              id: selectedOffer.passengerIds[i] || `passenger_${i}`,
               type: 'adult',
               given_name: p.firstName,
               family_name: p.lastName,
               email: p.email,
+              phone_number: p.phone || '+10000000000',
               born_on: p.dateOfBirth,
+              gender: 'm',
+              title: 'mr',
               identity_documents: p.passportNumber ? [{
                 type: 'passport',
                 unique_identifier: p.passportNumber,
@@ -794,6 +802,16 @@ export default function App() {
                               />
                             </div>
                             <div>
+                              <label className="block text-xs font-medium text-[var(--muted)] mb-1">Phone *</label>
+                              <input
+                                type="tel"
+                                value={pax.phone}
+                                onChange={e => updatePassenger(i, 'phone', e.target.value)}
+                                placeholder="+1 555 123 4567"
+                                className="w-full rounded-lg border border-[var(--line)] bg-[var(--paper)] px-3 py-2 text-sm text-[var(--ink)] placeholder:text-[var(--muted)] focus:outline-none focus:border-[var(--accent)]"
+                              />
+                            </div>
+                            <div>
                               <label className="block text-xs font-medium text-[var(--muted)] mb-1">Date of Birth</label>
                               <input
                                 type="date"
@@ -851,7 +869,7 @@ export default function App() {
                         </button>
                         <button
                           onClick={() => setBookingStep('confirm')}
-                          disabled={passengerForms.some(p => !p.firstName || !p.lastName || !p.email)}
+                          disabled={passengerForms.some(p => !p.firstName || !p.lastName || !p.email || !p.phone)}
                           className="flex-1 rounded-xl bg-[var(--ink)] py-3 text-sm font-semibold text-[var(--paper)] hover:opacity-90 disabled:opacity-40"
                         >
                           Review & Confirm
