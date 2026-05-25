@@ -104,17 +104,16 @@ const MIGRATIONS = [
 export default function App() {
   const { user, loading, signIn, signOut } = useProAuth(app)
   const { theme, setPreference } = useTheme()
-  const { permission, isSubscribed, subscribe, unsubscribe } = useProNotifications(app)
-  const [dbReady, setDbReady] = useState(false)
-  const [dbError, setDbError] = useState('')
+  useProNotifications(app)
+  const [, setDbReady] = useState(false)
   const migratedRef = useRef(false)
   const [tab, setTab] = useState<Tab>('search')
 
   // Search state
   const [origin, setOrigin] = useState('')
   const [destination, setDestination] = useState('')
-  const [departDate, setDepartDate] = useState('')
-  const [returnDate, setReturnDate] = useState('')
+  const [departDate, setDepartDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 7); return d.toISOString().slice(0, 10) })
+  const [returnDate, setReturnDate] = useState(() => { const d = new Date(); d.setDate(d.getDate() + 14); return d.toISOString().slice(0, 10) })
   const [passengers, setPassengers] = useState(1)
   const [cabinClass, setCabinClass] = useState<'economy' | 'premium_economy' | 'business' | 'first'>('economy')
   const [searching, setSearching] = useState(false)
@@ -145,10 +144,7 @@ export default function App() {
         console.log('Migrations:', result)
         setDbReady(true)
       })
-      .catch(e => {
-        console.error('Migration failed:', e)
-        setDbError(e instanceof Error ? e.message : 'DB migration failed')
-      })
+      .catch(e => console.error('Migration failed:', e))
     app.kv.get<{ lastOrigin?: string; lastDestination?: string }>('prefs')
       .then(prefs => {
         if (prefs?.lastOrigin) setOrigin(prefs.lastOrigin)
@@ -405,7 +401,7 @@ export default function App() {
   // --- Select offer and go to booking ---
   const selectOffer = useCallback((offer: FlightOffer) => {
     setSelectedOffer(offer)
-    setBookingStep('details')
+    setBookingStep('select')
     setTab('booking')
   }, [])
 
@@ -480,29 +476,18 @@ export default function App() {
       <header className="sticky top-0 z-50 border-b border-[var(--line)] bg-[var(--glass)] backdrop-blur-xl px-4 py-3">
         <div className="mx-auto max-w-4xl flex items-center justify-between">
           <h1 className="display-font text-xl font-bold text-[var(--ink)]">Flights Booking</h1>
-          <div className="flex items-center gap-3">
-            {dbError && <span className="text-[0.6rem] text-[var(--error)]">DB: {dbError}</span>}
-            {dbReady && <span className="text-[0.6rem] text-[var(--success)]">DB ready</span>}
-            {permission !== 'denied' && (
-              <button
-                onClick={isSubscribed ? unsubscribe : subscribe}
-                className="rounded-full border border-[var(--line-strong)] px-2 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
-                title={isSubscribed ? 'Disable notifications' : 'Enable notifications'}
-              >
-                {isSubscribed ? 'Notif On' : 'Notif Off'}
-              </button>
-            )}
+          <div className="flex items-center gap-2">
             <button
               onClick={() => setPreference(theme === 'dark' ? 'light' : 'dark')}
-              className="rounded-full border border-[var(--line-strong)] px-2 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
+              className="rounded-full border border-[var(--line-strong)] w-8 h-8 flex items-center justify-center text-xs text-[var(--muted)] hover:text-[var(--ink)]"
               title="Toggle theme"
             >
-              {theme === 'dark' ? 'Light' : 'Dark'}
+              {theme === 'dark' ? 'L' : 'D'}
             </button>
-            <span className="text-xs text-[var(--muted)]">{user.login}</span>
+            <span className="text-xs text-[var(--muted)] hidden sm:inline">{user.login}</span>
             <button
               onClick={signOut}
-              className="rounded-full border border-[var(--line-strong)] px-3 py-1 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
+              className="rounded-full border border-[var(--line-strong)] px-3 py-1.5 text-xs text-[var(--muted)] hover:text-[var(--ink)]"
             >
               Sign out
             </button>
