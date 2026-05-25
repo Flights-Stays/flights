@@ -1,5 +1,5 @@
 import { initPro } from '@proappstore/sdk'
-import { useProAuth, useTheme, useProNotifications } from '@proappstore/sdk/hooks'
+import { useProAuth, useTheme } from '@proappstore/sdk/hooks'
 import { useState, useCallback, useEffect, useRef } from 'react'
 
 const app = initPro({ appId: 'flights' })
@@ -106,8 +106,7 @@ const MIGRATIONS = [
 export default function App() {
   const { user, loading, signIn, signOut } = useProAuth(app)
   const { theme, setPreference } = useTheme()
-  useProNotifications(app)
-  const [, setDbReady] = useState(false)
+  const [searchError, setSearchError] = useState('')
   const migratedRef = useRef(false)
   const [tab, setTab] = useState<Tab>('search')
 
@@ -142,10 +141,7 @@ export default function App() {
     if (!user || migratedRef.current) return
     migratedRef.current = true
     app.db.migrate(MIGRATIONS)
-      .then(result => {
-        console.log('Migrations:', result)
-        setDbReady(true)
-      })
+      .then(result => console.log('Migrations:', result))
       .catch(e => console.error('Migration failed:', e))
     app.kv.get<{ lastOrigin?: string; lastDestination?: string }>('prefs')
       .then(prefs => {
@@ -179,6 +175,8 @@ export default function App() {
   const searchFlights = useCallback(async () => {
     if (!origin || !destination || !departDate) return
     setSearching(true)
+    setSearchError('')
+    setOffers([])
     app.kv.set('prefs', { lastOrigin: origin, lastDestination: destination }).catch(() => {})
 
     try {
@@ -267,8 +265,10 @@ export default function App() {
       }))
       setTab('results')
     } catch (e) {
-      console.error('Duffel search failed, using AI mock data:', e)
-      // Fallback: generate mock offers via AI
+      console.error('Duffel search failed, trying AI fallback:', e)
+      setSearchError(e instanceof Error && e.message === 'proxy_limit'
+        ? 'This route has too many results. Try a shorter route (e.g. LHR → CDG) or nonstop only.'
+        : '')
       try {
         const { text } = await app.ai.generate(
           `Generate 6 realistic flight offers as JSON array for ${origin.toUpperCase()} to ${destination.toUpperCase()} on ${departDate}${returnDate ? ` (return ${returnDate})` : ''}, ${passengers} adult(s), ${cabinClass} class. Each: {"id":"offer_xxx","airline":"XX","airlineName":"Airline Name","departure":"HH:MM","arrival":"HH:MM","origin":"${origin.toUpperCase()}","destination":"${destination.toUpperCase()}","price":number,"currency":"USD","duration":"Xh Ym","stops":0|1|2,"segments":[{"carrier":"XX","flightNumber":"1234","origin":"XXX","destination":"YYY","departureAt":"${departDate}T10:00:00","arrivalAt":"${departDate}T14:00:00","duration":"4h 0m"}]}. Vary prices ($200-$1500 for economy, $800-$4000 for business). Return ONLY the JSON array.`
@@ -289,8 +289,8 @@ export default function App() {
     if (!selectedOffer || passengerForms.some(p => !p.firstName || !p.lastName || !p.email || !p.phone)) return
     setBookingInProgress(true)
 
+    let bookingStatus: BookingStatus = 'pending'
     try {
-      // Try Duffel order creation
       const res = await app.proxy.fetch('api.duffel.com/air/orders', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json', 'Duffel-Version': 'v2' },
@@ -304,8 +304,8 @@ export default function App() {
               given_name: p.firstName,
               family_name: p.lastName,
               email: p.email,
-              phone_number: p.phone || '+10000000000',
-              born_on: p.dateOfBirth,
+              phone_number: p.phone,
+              born_on: p.dateOfBirth || '1990-01-01',
               gender: 'm',
               title: 'mr',
               identity_documents: p.passportNumber ? [{
@@ -323,18 +323,15 @@ export default function App() {
           }
         })
       })
-
-      if (!res.ok) throw new Error(`Duffel order: ${res.status}`)
-      // On success, the order is created — status becomes confirmed
+      if (res.ok) bookingStatus = 'confirmed'
     } catch (e) {
-      console.error('Duffel booking failed (expected without key), saving locally:', e)
+      console.error('Duffel booking failed:', e)
     }
 
-    // Save booking to D1 regardless (local record)
     const booking: Booking = {
       id: crypto.randomUUID(),
       offerId: selectedOffer.id,
-      status: 'confirmed',
+      status: bookingStatus,
       passengers: passengerForms,
       totalPrice: selectedOffer.price,
       currency: selectedOffer.currency,
@@ -621,6 +618,14 @@ export default function App() {
                 >
                   {searching ? 'Searching flights...' : 'Search Flights'}
                 </button>
+
+                {searchError && (
+                  <p className="text-xs text-[var(--error)] mt-2">{searchError}</p>
+                )}
+
+                {searching && (
+                  <p className="text-xs text-[var(--muted)] mt-2 text-center">Searching real flights via Duffel...</p>
+                )}
               </div>
             </section>
           )}
@@ -742,7 +747,7 @@ export default function App() {
                           ${selectedOffer.price} {selectedOffer.currency}
                         </p>
                         <p className="text-[0.6rem] text-[var(--muted)]">
-                          Total for {passengers} passenger{passengers > 1 ? 's' : ''}: ${selectedOffer.price * passengers} {selectedOffer.currency}
+                          Price per person · {passengers} passenger{passengers > 1 ? 's' : ''}
                         </p>
                       </div>
                       <div className="flex gap-3">
@@ -907,7 +912,7 @@ export default function App() {
                       <div className="border-t border-[var(--line)] pt-4 flex items-center justify-between">
                         <span className="text-sm text-[var(--muted)]">Total</span>
                         <span className="text-2xl font-bold text-[var(--ink)]">
-                          ${selectedOffer.price * passengers} {selectedOffer.currency}
+                          ${selectedOffer.price} {selectedOffer.currency}
                         </span>
                       </div>
 
